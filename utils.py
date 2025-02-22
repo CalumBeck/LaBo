@@ -6,6 +6,8 @@ import time
 import glob
 import argparse
 import pickle
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = "expandable_segments:True"
 import torch
 import tqdm
 import numpy as np
