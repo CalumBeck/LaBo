@@ -60,14 +60,17 @@ def batchify_run(process_fn, data_lst, res, batch_size, use_tqdm=False):
     for i in iterator:
         batch_data = data_lst[i * batch_size:(i + 1) * batch_size]
         batch_res = process_fn(batch_data)
-        res[i * batch_size:(i + 1) * batch_size] = batch_res
-        del batch_res
+        # Move to CPU before assignment and delete
+        res[i * batch_size:(i + 1) * batch_size] = batch_res.cpu()
+        del batch_res  # Explicitly delete to free memory
+        torch.cuda.empty_cache() # and clear cache.
 
 
 def prepare_img_feat(img_names,
                      ckpt_path=None,
                      save_path=None,
-                     clip_model_name='ViT-B/32'):
+                     clip_model_name='ViT-B/32',
+                     batch_size=32):  # Keep batch_size parameter
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, preprocess = clip.load(clip_model_name, device=device)
 
@@ -81,17 +84,32 @@ def prepare_img_feat(img_names,
     if ckpt_path:
         ckpt = torch.load(ckpt_path)
         model.load_state_dict(ckpt)
-    res = torch.empty((len(img_names), latent_dim))
+
+    # Pre-allocate on CPU instead of GPU
+    res = torch.empty((len(img_names), latent_dim), device='cpu')
 
     def process_img(img_names):
-        img_tensor = torch.cat([preprocess(Image.open('{}'.format(img_name)))\
-                .unsqueeze(0).to(device) \
-                for img_name in img_names])
+        img_tensor = []
+        for img_name in img_names:
+            try:
+                img = Image.open('{}'.format(img_name))
+                processed_img = preprocess(img).unsqueeze(0).to(device)
+                img_tensor.append(processed_img)
+            except Exception as e:
+                print(f"Error loading image {img_name}: {e}")
+                continue  
+
+        if not img_tensor: 
+            return torch.empty((0, latent_dim), device=device)
+
+        img_tensor = torch.cat(img_tensor)
+
         with torch.no_grad():
             img_feat = model.encode_image(img_tensor)
         return img_feat
 
-    batchify_run(process_img, img_names, res, 2048, use_tqdm=True)
+    batchify_run(process_img, img_names, res, batch_size, use_tqdm=True)
+
     if save_path:
         torch.save(res, save_path)
     return res
